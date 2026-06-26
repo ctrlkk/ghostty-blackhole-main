@@ -231,7 +231,6 @@ int main(int argc, char* argv[]) {
     glfwWindowHint(GLFW_DECORATED, GL_FALSE);
     glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
     glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_TRUE);
-    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
 
     // Get primary monitor size
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();
@@ -252,11 +251,10 @@ int main(int argc, char* argv[]) {
         HWND hwnd = glfwGetWin32Window(window);
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         LONG ex = GetWindowLong(hwnd, GWL_EXSTYLE);
-        SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED);
+        SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW );
         // Exclude from WGC/DXGI capture (prevents feedback loop)
         SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
         // Make black pixels transparent
-        SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
     }
 
     glfwMakeContextCurrent(window);
