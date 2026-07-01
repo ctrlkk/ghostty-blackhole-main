@@ -417,6 +417,21 @@ static bool isWatchingVideo() {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
 
+    // === DEBUG LOG: 记录前台窗口信息和判断过程 ===
+    FILE* vlog = fopen("blackhole_video.log", "a");
+    if (vlog) {
+        DWORD vpid = 0; GetWindowThreadProcessId(fg, &vpid);
+        char vpname[260] = {}; GetProcessName(vpid, vpname, sizeof(vpname));
+        wchar_t vcls[64] = {}; GetClassNameW(fg, vcls, 64);
+        RECT vr = {}; GetWindowRect(fg, &vr);
+        LONG_PTR vex = GetWindowLongPtrW(fg, GWL_EXSTYLE);
+        LONG_PTR vst = GetWindowLongPtrW(fg, GWL_STYLE);
+        fprintf(vlog, "[%lu] fg hwnd=%p pid=%lu name='%s' cls='%ls' rect=(%ld,%ld,%ld,%ld) %ldx%ld exStyle=0x%lx style=0x%lx\n",
+                GetTickCount(), fg, vpid, vpname, vcls, vr.left, vr.top, vr.right, vr.bottom,
+                vr.right-vr.left, vr.bottom-vr.top, vex, vst);
+        fflush(vlog);
+    }
+
     // 排除黑洞自己的渲染窗口（WS_EX_NOACTIVATE + WS_EX_TOPMOST + WS_EX_TRANSPARENT）
     {
         LONG_PTR ex = GetWindowLongPtrW(fg, GWL_EXSTYLE);
@@ -437,12 +452,15 @@ static bool isWatchingVideo() {
     if (!pfnQuns) pfnQuns = (PFN_QUNS)GetProcAddress(GetModuleHandleA("shell32.dll"), "SHQueryUserNotificationState");
     if (pfnQuns) {
         QUNS state;
-        if (SUCCEEDED(pfnQuns(&state)) && (state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE))
+        if (SUCCEEDED(pfnQuns(&state)) && (state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE)) {
+            if (vlog) { fprintf(vlog, "  -> TRUE: Method 1 (QUNS state=%d)\n", (int)state); fclose(vlog); }
             return true;
+        }
     }
 
     // Method 1b: any foreground window covering entire screen (borderless fullscreen games)
     // 但排除最大化的普通窗口（只针对真正的全屏游戏）
+    // 也排除桌面本身（Progman/WorkerW）—— 桌面天然铺满全屏但不是游戏
     {
         RECT r;
         if (GetWindowRect(fg, &r)) {
@@ -451,7 +469,17 @@ static bool isWatchingVideo() {
             // 只有窗口完全覆盖屏幕且不是最大化窗口时才认为是全屏游戏
             // 最大化窗口 (WS_MAXIMIZE) 不算全屏，避免误判编辑器/浏览器
             LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
-            if (ww >= sw && wh >= sh && !(style & WS_MAXIMIZE)) return true;
+            if (ww >= sw && wh >= sh && !(style & WS_MAXIMIZE)) {
+                // 排除桌面窗口：Progman（桌面）和 WorkerW（桌面图标层）
+                wchar_t cls2[64] = {};
+                if (GetClassNameW(fg, cls2, 64) &&
+                    (wcscmp(cls2, L"Progman") == 0 || wcscmp(cls2, L"WorkerW") == 0)) {
+                    if (vlog) { fprintf(vlog, "  -> skip Method 1b: desktop window (cls='%ls')\n", cls2); fclose(vlog); }
+                } else {
+                    if (vlog) { fprintf(vlog, "  -> TRUE: Method 1b (fullscreen window %dx%d vs screen %dx%d, style=0x%lx)\n", ww, wh, sw, sh, style); fclose(vlog); }
+                    return true;
+                }
+            }
         }
     }
 
@@ -475,12 +503,9 @@ static bool isWatchingVideo() {
                     strstr(pname, "nvidia"));
     bool isBrowser = (strstr(pname, "chrome") || strstr(pname, "msedge") || strstr(pname, "firefox") ||
                       strstr(pname, "opera") || strstr(pname, "brave"));
-    // Common game launchers (Steam overlay, EOS, Ubisoft Connect, etc.)
-    // These indicate user is likely in-game even if game exe name isn't matched
-    bool isGameLauncher = (strstr(pname, "steam") || strstr(pname, "epic") || strstr(pname, "ubisoft") ||
-                          strstr(pname, "ubiconnect") || strstr(pname, "eaapp") || strstr(pname, "origin") ||
-                          strstr(pname, "battlenet") || strstr(pname, "riot") || strstr(pname, "gog") ||
-                          strstr(pname, "xbox") || strstr(pname, "gamebar"));
+    // 注：游戏启动器 (Steam/Epic/Ubisoft/EA/Battle.net/Riot/GOG/Xbox/GameBar) 不再无条件
+    // 视为"正在玩游戏"。真正的全屏游戏会被 Method 1 (D3D 独占全屏) 或 Method 1b (无边框
+    // 全屏窗口) 捕获；启动器自身前台 + 用户空闲 = 用户挂着启动器离开，应正常触发屏保。
     bool uwpDetected = false;
     // UWP apps run under ApplicationFrameHost.exe  check window title for media players
     bool isUWPVideo = false;
@@ -496,10 +521,11 @@ static bool isWatchingVideo() {
             }
         }
     }
-    // Game launcher in foreground = user is gaming, skip audio check
-    if (isGameLauncher) return true;
     // Not a known video app or browser  no need for audio check
-    if (!isDedicatedVideoPlayer && !isBrowser && !isUWPVideo) return false;
+    if (!isDedicatedVideoPlayer && !isBrowser && !isUWPVideo) {
+        if (vlog) { fprintf(vlog, "  -> FALSE: not a video/browser app (pname='%s')\n", pname); fclose(vlog); }
+        return false;
+    }
     
     // For browsers: need window title with video keywords AND significant audio
     if (isBrowser && !uwpDetected) {
@@ -515,7 +541,10 @@ static bool isWatchingVideo() {
                                 wcsstr(wtitle, L"电影") || wcsstr(wtitle, L"Movie") ||
                                 wcsstr(wtitle, L"直播") || wcsstr(wtitle, L"Live"));
         // 浏览器没有视频关键词标题，不阻止触发
-        if (!hasVideoKeyword) return false;
+        if (!hasVideoKeyword) {
+            if (vlog) { fprintf(vlog, "  -> FALSE: browser without video keyword\n"); fclose(vlog); }
+            return false;
+        }
     }
 
     // Method 3: check if this app has audio
@@ -573,6 +602,7 @@ static bool isWatchingVideo() {
         sc->Release();
     }
     se->Release(); mgr->Release();
+    if (vlog) { fprintf(vlog, "  -> %s: Method 3 audio check (hasAudio=%d)\n", hasAudio ? "TRUE" : "FALSE", hasAudio); fclose(vlog); }
     return hasAudio;
 }
 
@@ -659,7 +689,8 @@ int main(int argc, char* argv[]) {
 
     // 主程序启动时杀掉旧的 blackhole 进程（避免新旧实例冲突）
     // --render 子进程不杀（它由 monitor 管理）
-    if (!isRenderer) {
+    // --config 子进程也不杀（它由托盘菜单调出，杀它会误杀正在运行的 monitor）
+    if (!isRenderer && !isConfig) {
         DWORD myPid = GetCurrentProcessId();
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         PROCESSENTRY32 pe = { sizeof(pe) };
@@ -684,13 +715,23 @@ int main(int argc, char* argv[]) {
             InitDefaultPresets(cfg);
         cfg.mode = 0;
     } else if (isConfig) {
-        // === CONFIG ONLY: show config panel, save and exit ===
+        // === CONFIG ONLY: show config panel, save and restart monitor ===
         if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
         if (!GUI_ShowConfigPanel(cfg)) { glfwTerminate(); return 0; }
-        // Save config and exit
+        // Save config
         char names[64][64] = {};
         SavePresetsToFile(cfg, names);
         glfwTerminate();
+        // 保存后重启 monitor（用 --monitor 跳过配置面板，直接进托盘监控）
+        char selfPath[MAX_PATH];
+        GetModuleFileNameA(NULL, selfPath, MAX_PATH);
+        char cmd[MAX_PATH + 16];
+        snprintf(cmd, sizeof(cmd), "\"%s\" --monitor", selfPath);
+        STARTUPINFOA si = {}; si.cb = sizeof(si);
+        PROCESS_INFORMATION pi;
+        CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
         return 0;
     } else {
         // === CONFIG + MONITOR (normal launch) or MONITOR ONLY (--monitor) ===
@@ -739,7 +780,7 @@ int main(int argc, char* argv[]) {
             if (m == WM_COMMAND && LOWORD(w) == ID_TRAY_EXIT)
                 PostQuitMessage(0);
             if (m == WM_COMMAND && LOWORD(w) == ID_TRAY_CONFIG) {
-                // 启动配置界面
+                // 启动配置子进程，保存后由它重启 monitor（--monitor 模式）
                 auto* pSelf = (char*)GetWindowLongPtrA(h, GWLP_USERDATA);
                 char cmd[MAX_PATH + 16];
                 snprintf(cmd, sizeof(cmd), "\"%s\" --config", pSelf);
@@ -748,6 +789,8 @@ int main(int argc, char* argv[]) {
                 CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
                 CloseHandle(pi.hProcess);
                 CloseHandle(pi.hThread);
+                // 当前 monitor 退出：托盘图标和渲染进程由消息循环后的正常清理路径处理
+                PostQuitMessage(0);
             }
             if (m == WM_TIMER && w == 1) {
                 auto* pSelf = (char*)GetWindowLongPtrA(h, GWLP_USERDATA);

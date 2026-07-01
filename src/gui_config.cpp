@@ -14,10 +14,13 @@ static void SetAutoStart(bool enable) {
     const char* keyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    
+
     if (RegOpenKeyExA(HKEY_CURRENT_USER, keyPath, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
         if (enable) {
-            RegSetValueExA(hKey, "BlackholeScreensaver", 0, REG_SZ, (const BYTE*)exePath, strlen(exePath) + 1);
+            // 无感自启：直接进 monitor 模式，跳过配置面板，按上次保存的配置运行
+            char cmd[MAX_PATH + 32];
+            snprintf(cmd, sizeof(cmd), "\"%s\" --monitor", exePath);
+            RegSetValueExA(hKey, "BlackholeScreensaver", 0, REG_SZ, (const BYTE*)cmd, strlen(cmd) + 1);
         } else {
             RegDeleteValueA(hKey, "BlackholeScreensaver");
         }
