@@ -101,9 +101,10 @@ bool Win32GL_Init(Win32GL& wgl, const char* title, int width, int height) {
     if (!registered) { RegisterClassExW(&wc); registered = true; }
 
     // 2. 创建窗口（全屏无边框桌面特效窗口）
-    // 注意：不使用 WS_EX_LAYERED，因为 SetLayeredWindowAttributes 会自动显示窗口
-    // 分层属性将在渲染完成后添加
-    DWORD exStyle = WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT;
+    // 关键：创建时就带 WS_EX_LAYERED，初始 alpha=0 完全透明
+    // 这样后续不需要运行时切换分层属性（属性切换会触发 DWM 重新合成→闪烁）
+    DWORD exStyle = WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
+                    WS_EX_TRANSPARENT | WS_EX_LAYERED;
     DWORD style   = WS_POPUP;
 
     WCHAR wTitle[128];
@@ -119,6 +120,9 @@ bool Win32GL_Init(Win32GL& wgl, const char* title, int width, int height) {
         fprintf(stderr, "[Win32GL] CreateWindowEx failed: %lu\n", GetLastError());
         return false;
     }
+
+    // 创建后立即设 alpha=0（完全透明），窗口显示时用户看不到空白帧
+    SetLayeredWindowAttributes(wgl.hwnd, 0, 0, LWA_ALPHA);
 
     // 3. 获取 DC
     wgl.hdc = GetDC(wgl.hwnd);
@@ -332,19 +336,13 @@ void Win32GL_Show(Win32GL& wgl) {
 
 void Win32GL_EnableLayered(Win32GL& wgl) {
     if (!wgl.active || !wgl.hwnd) return;
-    
-    // 添加 WS_EX_LAYERED 样式
-    LONG_PTR exStyle = GetWindowLongPtrW(wgl.hwnd, GWL_EXSTYLE);
-    exStyle |= WS_EX_LAYERED;
-    SetWindowLongPtrW(wgl.hwnd, GWL_EXSTYLE, exStyle);
-    
-    // 设置分层窗口 alpha 属性
+
+    // 窗口创建时已是 WS_EX_LAYERED（alpha=0 透明）
+    // 这里只需设 alpha=255 让窗口可见，不需要改变扩展样式
+    // 避免运行时 SetWindowLongPtrW 切换 WS_EX_LAYERED 导致 DWM 重新合成闪烁
     SetLayeredWindowAttributes(wgl.hwnd, 0, 255, LWA_ALPHA);
-    
-    // 强制刷新窗口，让 DWM 立即合成
-    RedrawWindow(wgl.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-    
-    fprintf(stderr, "[Win32GL] Layered mode enabled\n");
+
+    fprintf(stderr, "[Win32GL] Layered alpha set to 255\n");
 }
 
 void Win32GL_Hide(Win32GL& wgl) {
