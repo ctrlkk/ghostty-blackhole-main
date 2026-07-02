@@ -1,10 +1,10 @@
-name: Build blackhole.exe
+name: 构建 blackhole.exe
 
-# Windows-only MinGW (MSYS2 ucrt64) build.
-# Triggers:
-#   - push / pull_request on main
-#   - manual run via workflow_dispatch
-#   - tag v*.*.*  ->  attach the built binary to a GitHub Release
+# Windows 专用 MinGW (MSYS2 ucrt64) 构建流水线。
+# 触发条件：
+#   - push / pull_request 到 main：构建 + 同步到「持续构建」滚动 Release
+#   - 推送 v*.*.* tag：创建正式版本 Release（如 v1.2.3）
+#   - 手动触发 (workflow_dispatch)
 on:
   push:
     branches: [main]
@@ -14,53 +14,56 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed to publish a release on tag push
+  contents: write   # 创建 / 更新 Release 需要写权限
 
 jobs:
   build-windows:
     runs-on: windows-latest
-    name: Build (MinGW ucrt64)
+    name: Windows 构建 (MinGW ucrt64)
 
     steps:
-      - name: Checkout source
+      - name: 检出源码
         uses: actions/checkout@v4
 
-      - name: Set up MSYS2 (ucrt64)
+      - name: 配置 MSYS2 (ucrt64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: ucrt64
           update: true
-          # Toolchain + GLFW3 (headers/libs). windres ships with the binutils that
-          # mingw-w64-ucrt-x86_64-gcc pulls in, so no extra package is needed.
+          # 工具链 + GLFW3。windres 随 mingw-w64-ucrt-x86_64-gcc 自带，无需额外安装。
           install: >-
             git
             base-devel
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-glfw
 
-      - name: Show toolchain versions
+      - name: 显示工具链版本
         shell: msys2 {0}
         run: |
+          echo "===== g++ 版本 ====="
           g++ --version
+          echo "===== windres 版本 ====="
           windres --version
+          echo "===== GLFW 库文件 ====="
           ls "$MSYSTEM_PREFIX/lib/" | grep -i glfw || true
 
-      - name: Compile resource (icon)
+      - name: 编译资源（嵌入图标）
         shell: msys2 {0}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           mkdir -p build
-          # Use --use-temp-file to dodge the windres popen bug on Windows
-          # (see CMakeLists.txt note in the repo).
+          # --use-temp-file 规避 windres 在 Windows 上的 popen bug（见 CMakeLists.txt 注释）
           windres --use-temp-file --output-format=coff --input-format=rc \
                   -o build/resource.o resource.rc
+          echo "图标资源编译完成: build/resource.o"
 
-      - name: Compile blackhole.exe
+      - name: 编译 blackhole.exe
         shell: msys2 {0}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+          echo "开始编译..."
           g++ -std=c++17 -O2 -fexec-charset=UTF-8 \
               -o build/blackhole.exe \
               src/main.cpp \
@@ -82,26 +85,28 @@ jobs:
               -lglfw3 -lopengl32 -lgdi32 -ld3d11 -ldxgi \
               -lruntimeobject -ldwmapi -lcomctl32 -lole32 \
               -mwindows
+          echo "编译成功: build/blackhole.exe"
+          ls -la build/blackhole.exe
 
-      - name: Stage runtime files
+      - name: 收集运行时文件（着色器 + DLL）
         shell: msys2 {0}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           mkdir -p build/shaders
-          # Shaders / config
-          cp -f shaders/*  build/shaders/
-          cp -f blackhole.glsl build/
+          echo "复制着色器和配置..."
+          cp -f shaders/*            build/shaders/
+          cp -f blackhole.glsl       build/
           cp -f blackhole_presets.txt build/
-          # MinGW + GLFW runtime DLLs that the exe links against
+          echo "复制 MinGW / GLFW 运行时 DLL..."
           cp -f "$MSYSTEM_PREFIX/bin/glfw3.dll"            build/
           cp -f "$MSYSTEM_PREFIX/bin/libgcc_s_seh-1.dll"   build/
           cp -f "$MSYSTEM_PREFIX/bin/libstdc++-6.dll"     build/
           cp -f "$MSYSTEM_PREFIX/bin/libwinpthread-1.dll" build/
-          echo "--- build/ contents ---"
+          echo "===== 最终 build/ 目录 ====="
           ls -la build/
 
-      - name: Upload build artifact
+      - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
           name: blackhole-windows-x64
@@ -109,12 +114,33 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # When the run is triggered by a pushed tag like v1.2.3, attach the build
-      # as a downloadable asset on the matching GitHub Release.
-      - name: Publish release on tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      # 构建结束后发布到 GitHub Releases：
+      #   - 推送 v*.*.* tag → 创建/更新同名正式版本 Release（如 v1.2.3）
+      #   - push 到 main   → 持续更新「持续构建」滚动预发布 Release
+      #   - PR / 手动      → 不发布（仅上传 Artifact）
+      - name: 发布到 Releases
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'continuous' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('Blackhole {0}', github.ref_name) || 'Blackhole 持续构建' }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          overwrite_files: true
+          # 每次发布都生成自上次 tag 以来的 commit 列表作为说明
+          generate_release_notes: true
+          body: |
+            ## Blackhole Windows 构建
+
+            下载方式：
+            1. 下载 `blackhole-windows-x64` 压缩包（或下方单独的资源文件）
+            2. 解压到任意目录，双击 `blackhole.exe` 运行
+
+            包含文件：
+            - `blackhole.exe` — 主程序
+            - `glfw3.dll` / `libgcc_s_seh-1.dll` / `libstdc++-6.dll` / `libwinpthread-1.dll` — 运行时依赖
+            - `shaders/` — GLSL 着色器
+            - `blackhole.glsl` — 黑洞主着色器
+            - `blackhole_presets.txt` — 预设配置（v4）
           files: |
             build/blackhole.exe
             build/glfw3.dll
@@ -124,4 +150,3 @@ jobs:
             build/blackhole.glsl
             build/blackhole_presets.txt
             build/shaders/*
-          generate_release_notes: true
