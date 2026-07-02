@@ -1,0 +1,127 @@
+name: Build blackhole.exe
+
+# Windows-only MinGW (MSYS2 ucrt64) build.
+# Triggers:
+#   - push / pull_request on main
+#   - manual run via workflow_dispatch
+#   - tag v*.*.*  ->  attach the built binary to a GitHub Release
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to publish a release on tag push
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    name: Build (MinGW ucrt64)
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (ucrt64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ucrt64
+          update: true
+          # Toolchain + GLFW3 (headers/libs). windres ships with the binutils that
+          # mingw-w64-ucrt-x86_64-gcc pulls in, so no extra package is needed.
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-glfw
+
+      - name: Show toolchain versions
+        shell: msys2 {0}
+        run: |
+          g++ --version
+          windres --version
+          ls "$MSYSTEM_PREFIX/lib/" | grep -i glfw || true
+
+      - name: Compile resource (icon)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p build
+          # Use --use-temp-file to dodge the windres popen bug on Windows
+          # (see CMakeLists.txt note in the repo).
+          windres --use-temp-file --output-format=coff --input-format=rc \
+                  -o build/resource.o resource.rc
+
+      - name: Compile blackhole.exe
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -fexec-charset=UTF-8 \
+              -o build/blackhole.exe \
+              src/main.cpp \
+              src/capture_wgc.cpp \
+              src/capture_dxgi.cpp \
+              src/gl_texture.cpp \
+              src/gui_config.cpp \
+              src/win32_gl.cpp \
+              src/imgui/imgui.cpp \
+              src/imgui/imgui_draw.cpp \
+              src/imgui/imgui_widgets.cpp \
+              src/imgui/imgui_tables.cpp \
+              src/imgui/imgui_impl_glfw.cpp \
+              src/imgui/imgui_impl_opengl3.cpp \
+              build/resource.o \
+              -I src/imgui \
+              -I "$MSYSTEM_PREFIX/include" \
+              -L "$MSYSTEM_PREFIX/lib" \
+              -lglfw3 -lopengl32 -lgdi32 -ld3d11 -ldxgi \
+              -lruntimeobject -ldwmapi -lcomctl32 -lole32 \
+              -mwindows
+
+      - name: Stage runtime files
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p build/shaders
+          # Shaders / config
+          cp -f shaders/*  build/shaders/
+          cp -f blackhole.glsl build/
+          cp -f blackhole_presets.txt build/
+          # MinGW + GLFW runtime DLLs that the exe links against
+          cp -f "$MSYSTEM_PREFIX/bin/glfw3.dll"            build/
+          cp -f "$MSYSTEM_PREFIX/bin/libgcc_s_seh-1.dll"   build/
+          cp -f "$MSYSTEM_PREFIX/bin/libstdc++-6.dll"     build/
+          cp -f "$MSYSTEM_PREFIX/bin/libwinpthread-1.dll" build/
+          echo "--- build/ contents ---"
+          ls -la build/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackhole-windows-x64
+          path: build/
+          if-no-files-found: error
+          retention-days: 14
+
+      # When the run is triggered by a pushed tag like v1.2.3, attach the build
+      # as a downloadable asset on the matching GitHub Release.
+      - name: Publish release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/blackhole.exe
+            build/glfw3.dll
+            build/libgcc_s_seh-1.dll
+            build/libstdc++-6.dll
+            build/libwinpthread-1.dll
+            build/blackhole.glsl
+            build/blackhole_presets.txt
+            build/shaders/*
+          generate_release_notes: true
