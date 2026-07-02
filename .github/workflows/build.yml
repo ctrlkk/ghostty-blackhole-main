@@ -106,11 +106,22 @@ jobs:
           echo "===== 最终 build/ 目录 ====="
           ls -la build/
 
+      - name: 打包为 ZIP 压缩包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zipName = "blackhole-windows-x64.zip"
+          # build/* 通配：把 build 内的内容直接放到 zip 根目录（不嵌套一层 build 文件夹）
+          Compress-Archive -Path "build/*" -DestinationPath $zipName -Force
+          $info = Get-Item $zipName
+          "{0}  ({1:N2} MB)" -f $zipName, ($info.Length / 1MB)
+          Get-ChildItem $zipName
+
       - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: blackhole-windows-x64
-          path: build/
+          name: blackhole-windows-x64-zip
+          path: blackhole-windows-x64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -132,7 +143,7 @@ jobs:
             ## Blackhole Windows 构建
 
             下载方式：
-            1. 下载 `blackhole-windows-x64` 压缩包（或下方单独的资源文件）
+            1. 下载下方的 `blackhole-windows-x64.zip`
             2. 解压到任意目录，双击 `blackhole.exe` 运行
 
             包含文件：
@@ -142,11 +153,4 @@ jobs:
             - `blackhole.glsl` — 黑洞主着色器
             - `blackhole_presets.txt` — 预设配置（v4）
           files: |
-            build/blackhole.exe
-            build/glfw3.dll
-            build/libgcc_s_seh-1.dll
-            build/libstdc++-6.dll
-            build/libwinpthread-1.dll
-            build/blackhole.glsl
-            build/blackhole_presets.txt
-            build/shaders/*
+            blackhole-windows-x64.zip
